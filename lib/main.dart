@@ -1,4 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:convert';
+import 'dart:math';
 
 void main() {
   runApp(const MyApp());
@@ -20,6 +24,98 @@ class MyApp extends StatelessWidget {
   }
 }
 
+class Quote {
+  final String text;
+  final String author;
+  final String date;
+  bool isFavorited;
+
+  Quote({
+    required this.text,
+    required this.author,
+    required this.date,
+    this.isFavorited = false,
+  });
+
+  factory Quote.fromJson(Map<String, dynamic> json) {
+    return Quote(
+      text: json['text'],
+      author: json['author'],
+      date: json['date'],
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'text': text,
+      'author': author,
+      'date': date,
+      'isFavorited': isFavorited,
+    };
+  }
+}
+
+class QuoteService {
+  static List<Quote> _quotes = [];
+  static Quote? _currentQuote;
+
+  static Future<void> loadQuotes() async {
+    try {
+      final String response = await rootBundle.loadString('assets/quotes.json');
+      final List<dynamic> data = json.decode(response);
+      _quotes = data.map((json) => Quote.fromJson(json)).toList();
+      await _loadFavorites();
+      _setDailyQuote();
+    } catch (e) {
+      print('Error loading quotes: $e');
+    }
+  }
+
+  static Future<void> _loadFavorites() async {
+    final prefs = await SharedPreferences.getInstance();
+    final favoriteQuotes = prefs.getStringList('favorite_quotes') ?? [];
+
+    for (var quote in _quotes) {
+      quote.isFavorited = favoriteQuotes.contains(quote.text);
+    }
+  }
+
+  static Future<void> toggleFavorite(Quote quote) async {
+    quote.isFavorited = !quote.isFavorited;
+    await _saveFavorites();
+  }
+
+  static Future<void> _saveFavorites() async {
+    final prefs = await SharedPreferences.getInstance();
+    final favoriteQuotes = _quotes
+        .where((quote) => quote.isFavorited)
+        .map((quote) => quote.text)
+        .toList();
+    await prefs.setStringList('favorite_quotes', favoriteQuotes);
+  }
+
+  static void _setDailyQuote() {
+    if (_quotes.isNotEmpty) {
+      final dayOfYear =
+          DateTime.now().difference(DateTime(DateTime.now().year, 1, 1)).inDays;
+      _currentQuote = _quotes[dayOfYear % _quotes.length];
+    }
+  }
+
+  static Quote? getCurrentQuote() => _currentQuote;
+
+  static void refreshQuote() {
+    if (_quotes.isNotEmpty) {
+      final random = Random();
+      _currentQuote = _quotes[random.nextInt(_quotes.length)];
+    }
+  }
+
+  static List<Quote> getFavoriteQuotes() {
+    return _quotes.where((quote) => quote.isFavorited).toList();
+  }
+}
+
 class Philosopher {
   final String name;
   final String description;
@@ -36,8 +132,20 @@ class Philosopher {
   });
 }
 
-class PhilosopherSelectionPage extends StatelessWidget {
+class PhilosopherSelectionPage extends StatefulWidget {
   const PhilosopherSelectionPage({super.key});
+
+  @override
+  State<PhilosopherSelectionPage> createState() =>
+      _PhilosopherSelectionPageState();
+}
+
+class _PhilosopherSelectionPageState extends State<PhilosopherSelectionPage>
+    with TickerProviderStateMixin {
+  late AnimationController _animationController;
+  late Animation<double> _fadeAnimation;
+  Quote? _currentQuote;
+  bool _isLoading = true;
 
   static const List<Philosopher> philosophers = [
     Philosopher(
@@ -89,17 +197,159 @@ class PhilosopherSelectionPage extends StatelessWidget {
   ];
 
   @override
+  void initState() {
+    super.initState();
+    _animationController = AnimationController(
+      duration: const Duration(milliseconds: 500),
+      vsync: this,
+    );
+    _fadeAnimation =
+        Tween<double>(begin: 0.0, end: 1.0).animate(_animationController);
+    _loadQuoteOfTheDay();
+  }
+
+  Future<void> _loadQuoteOfTheDay() async {
+    await QuoteService.loadQuotes();
+    setState(() {
+      _currentQuote = QuoteService.getCurrentQuote();
+      _isLoading = false;
+    });
+    _animationController.forward();
+  }
+
+  void _refreshQuote() {
+    _animationController.reverse().then((_) {
+      QuoteService.refreshQuote();
+      setState(() {
+        _currentQuote = QuoteService.getCurrentQuote();
+      });
+      _animationController.forward();
+    });
+  }
+
+  void _toggleFavorite() async {
+    if (_currentQuote != null) {
+      await QuoteService.toggleFavorite(_currentQuote!);
+      setState(() {});
+    }
+  }
+
+  IconData _getPhilosopherIcon(String author) {
+    switch (author) {
+      case 'Socrates':
+        return Icons.psychology;
+      case 'Marcus Aurelius':
+        return Icons.shield;
+      case 'Lao Tzu':
+        return Icons.temple_buddhist;
+      case 'Buddha':
+        return Icons.self_improvement;
+      case 'Nietzsche':
+        return Icons.bolt;
+      default:
+        return Icons.format_quote;
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Choose Your Philosopher'),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.favorite),
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => const FavoritesPage(),
+                ),
+              );
+            },
+          ),
+        ],
       ),
       body: Padding(
         padding: const EdgeInsets.all(16.0),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // Quote of the Day Section
+            if (_isLoading)
+              const Center(child: CircularProgressIndicator())
+            else if (_currentQuote != null)
+              FadeTransition(
+                opacity: _fadeAnimation,
+                child: Card(
+                  elevation: 4,
+                  margin: const EdgeInsets.only(bottom: 24),
+                  child: Padding(
+                    padding: const EdgeInsets.all(20.0),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Icon(
+                              _getPhilosopherIcon(_currentQuote!.author),
+                              size: 28,
+                              color: Theme.of(context).colorScheme.primary,
+                            ),
+                            const SizedBox(width: 12),
+                            const Text(
+                              'Quote of the Day',
+                              style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            const Spacer(),
+                            IconButton(
+                              icon: Icon(
+                                _currentQuote!.isFavorited
+                                    ? Icons.favorite
+                                    : Icons.favorite_border,
+                                color: _currentQuote!.isFavorited
+                                    ? Colors.red
+                                    : null,
+                              ),
+                              onPressed: _toggleFavorite,
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.refresh),
+                              onPressed: _refreshQuote,
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        Text(
+                          '"${_currentQuote!.text}"',
+                          style: const TextStyle(
+                            fontSize: 16,
+                            fontStyle: FontStyle.italic,
+                            height: 1.4,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: Text(
+                            '— ${_currentQuote!.author}',
+                            style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w500,
+                              color: Theme.of(context).colorScheme.primary,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+
             const Text(
               'Select a philosopher to guide your conversation:',
               style: TextStyle(fontSize: 18, fontWeight: FontWeight.w500),
@@ -145,8 +395,9 @@ class PhilosopherSelectionPage extends StatelessWidget {
                           Container(
                             padding: const EdgeInsets.all(8),
                             decoration: BoxDecoration(
-                              color:
-                                  Theme.of(context).colorScheme.surfaceVariant,
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .surfaceContainerHighest,
                               borderRadius: BorderRadius.circular(8),
                             ),
                             child: Text(
@@ -185,6 +436,134 @@ class PhilosopherSelectionPage extends StatelessWidget {
       ),
     );
   }
+
+  @override
+  void dispose() {
+    _animationController.dispose();
+    super.dispose();
+  }
+}
+
+class FavoritesPage extends StatefulWidget {
+  const FavoritesPage({super.key});
+
+  @override
+  State<FavoritesPage> createState() => _FavoritesPageState();
+}
+
+class _FavoritesPageState extends State<FavoritesPage> {
+  List<Quote> _favoriteQuotes = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadFavorites();
+  }
+
+  void _loadFavorites() {
+    setState(() {
+      _favoriteQuotes = QuoteService.getFavoriteQuotes();
+    });
+  }
+
+  IconData _getPhilosopherIcon(String author) {
+    switch (author) {
+      case 'Socrates':
+        return Icons.psychology;
+      case 'Marcus Aurelius':
+        return Icons.shield;
+      case 'Lao Tzu':
+        return Icons.temple_buddhist;
+      case 'Buddha':
+        return Icons.self_improvement;
+      case 'Nietzsche':
+        return Icons.bolt;
+      default:
+        return Icons.format_quote;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Favorite Quotes'),
+        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
+      ),
+      body: _favoriteQuotes.isEmpty
+          ? const Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.favorite_border, size: 64, color: Colors.grey),
+                  SizedBox(height: 16),
+                  Text(
+                    'No favorite quotes yet',
+                    style: TextStyle(fontSize: 18, color: Colors.grey),
+                  ),
+                  SizedBox(height: 8),
+                  Text(
+                    'Start favoriting quotes to see them here!',
+                    style: TextStyle(color: Colors.grey),
+                  ),
+                ],
+              ),
+            )
+          : ListView.builder(
+              padding: const EdgeInsets.all(16),
+              itemCount: _favoriteQuotes.length,
+              itemBuilder: (context, index) {
+                final quote = _favoriteQuotes[index];
+                return Card(
+                  margin: const EdgeInsets.only(bottom: 12),
+                  child: Padding(
+                    padding: const EdgeInsets.all(16.0),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Icon(
+                              _getPhilosopherIcon(quote.author),
+                              size: 24,
+                              color: Theme.of(context).colorScheme.primary,
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              quote.author,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 16,
+                              ),
+                            ),
+                            const Spacer(),
+                            IconButton(
+                              icon:
+                                  const Icon(Icons.favorite, color: Colors.red),
+                              onPressed: () async {
+                                await QuoteService.toggleFavorite(quote);
+                                _loadFavorites();
+                              },
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          '"${quote.text}"',
+                          style: const TextStyle(
+                            fontSize: 15,
+                            fontStyle: FontStyle.italic,
+                            height: 1.4,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
+    );
+  }
 }
 
 class ChatPage extends StatefulWidget {
@@ -203,7 +582,6 @@ class _ChatPageState extends State<ChatPage> {
   @override
   void initState() {
     super.initState();
-    // Add welcome message from the philosopher
     _messages.add(ChatMessage(
       text:
           'Greetings! I am ${widget.philosopher.name}. How may I guide your thoughts today?',
@@ -220,7 +598,6 @@ class _ChatPageState extends State<ChatPage> {
         isUser: true,
       ));
 
-      // Simple echo response for now - this is where you'd integrate with an AI service
       _messages.add(ChatMessage(
         text:
             'As ${widget.philosopher.name} would say: "${widget.philosopher.previewQuote}" (This is a placeholder response)',
@@ -265,7 +642,9 @@ class _ChatPageState extends State<ChatPage> {
                     decoration: BoxDecoration(
                       color: message.isUser
                           ? Theme.of(context).colorScheme.primary
-                          : Theme.of(context).colorScheme.surfaceVariant,
+                          : Theme.of(context)
+                              .colorScheme
+                              .surfaceContainerHighest,
                       borderRadius: BorderRadius.circular(12),
                     ),
                     child: Text(
