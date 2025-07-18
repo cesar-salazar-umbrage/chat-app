@@ -20,5 +20,9 @@ local.properties
 .packages
 .pub-cache/
 .pub/
+/.env
 # Obsolete files
+**/node_modules
+*.lock
+*lock*
 *.log

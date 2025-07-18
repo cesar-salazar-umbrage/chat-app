@@ -1,10 +1,19 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:provider/provider.dart';
 import 'dart:convert';
 import 'dart:math';
 
-void main() {
+import 'services/chat_service.dart';
+import 'models/chat_models.dart';
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp();
+  await FirebaseAuth.instance.signInAnonymously();
   runApp(const MyApp());
 }
 
@@ -13,13 +22,18 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Philosopher Chat',
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
-        useMaterial3: true,
+    return MultiProvider(
+      providers: [
+        ChangeNotifierProvider(create: (_) => ChatService()),
+      ],
+      child: MaterialApp(
+        title: 'Philosopher Chat',
+        theme: ThemeData(
+          colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
+          useMaterial3: true,
+        ),
+        home: const PhilosopherSelectionPage(),
       ),
-      home: const PhilosopherSelectionPage(),
     );
   }
 }
@@ -577,39 +591,203 @@ class ChatPage extends StatefulWidget {
 
 class _ChatPageState extends State<ChatPage> {
   final TextEditingController _messageController = TextEditingController();
-  final List<ChatMessage> _messages = [];
+  final ScrollController _scrollController = ScrollController();
+  late ChatService _chatService;
+  String? _chatId;
+  bool _isInitialized = false;
 
   @override
   void initState() {
     super.initState();
-    _messages.add(ChatMessage(
-      text:
-          'Greetings! I am ${widget.philosopher.name}. How may I guide your thoughts today?',
-      isUser: false,
-    ));
+    _chatService = Provider.of<ChatService>(context, listen: false);
+    _initializeChat();
+  }
+
+  Future<void> _initializeChat() async {
+    try {
+      _chatId = await _chatService.createChatSession(widget.philosopher);
+      setState(() {
+        _isInitialized = true;
+      });
+    } catch (e) {
+      debugPrint('Error initializing chat: $e');
+      // Handle error - maybe show a snackbar
+    }
   }
 
   void _sendMessage() {
-    if (_messageController.text.trim().isEmpty) return;
+    if (_messageController.text.trim().isEmpty || _chatId == null) return;
 
-    setState(() {
-      _messages.add(ChatMessage(
-        text: _messageController.text,
-        isUser: true,
-      ));
-
-      _messages.add(ChatMessage(
-        text:
-            'As ${widget.philosopher.name} would say: "${widget.philosopher.previewQuote}" (This is a placeholder response)',
-        isUser: false,
-      ));
-    });
-
+    _chatService.sendMessage(_messageController.text, widget.philosopher);
     _messageController.clear();
+    _scrollToBottom();
+  }
+
+  void _scrollToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_scrollController.hasClients) {
+        _scrollController.animateTo(
+          _scrollController.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+      }
+    });
+  }
+
+  Widget _buildTypingIndicator() {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(12),
+      constraints: BoxConstraints(
+        maxWidth: MediaQuery.of(context).size.width * 0.7,
+      ),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            '${widget.philosopher.name} is thinking',
+            style: TextStyle(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+              fontStyle: FontStyle.italic,
+            ),
+          ),
+          const SizedBox(width: 8),
+          SizedBox(
+            width: 20,
+            height: 20,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              valueColor: AlwaysStoppedAnimation<Color>(
+                Theme.of(context).colorScheme.primary,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMessageBubble(ChatMessage message) {
+    final isUser = message.isUser;
+    return Align(
+      alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 8),
+        padding: const EdgeInsets.all(12),
+        constraints: BoxConstraints(
+          maxWidth: MediaQuery.of(context).size.width * 0.7,
+        ),
+        decoration: BoxDecoration(
+          color: isUser
+              ? Theme.of(context).colorScheme.primary
+              : Theme.of(context).colorScheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              message.text,
+              style: TextStyle(
+                color: isUser
+                    ? Theme.of(context).colorScheme.onPrimary
+                    : Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
+            if (message.status == MessageStatus.sending) ...[
+              const SizedBox(height: 4),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  SizedBox(
+                    width: 12,
+                    height: 12,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 1,
+                      valueColor: AlwaysStoppedAnimation<Color>(
+                        isUser
+                            ? Theme.of(context)
+                                .colorScheme
+                                .onPrimary
+                                .withOpacity(0.7)
+                            : Theme.of(context)
+                                .colorScheme
+                                .onSurfaceVariant
+                                .withOpacity(0.7),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    'Sending...',
+                    style: TextStyle(
+                      fontSize: 10,
+                      color: isUser
+                          ? Theme.of(context)
+                              .colorScheme
+                              .onPrimary
+                              .withOpacity(0.7)
+                          : Theme.of(context)
+                              .colorScheme
+                              .onSurfaceVariant
+                              .withOpacity(0.7),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+            if (message.status == MessageStatus.error) ...[
+              const SizedBox(height: 4),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.error_outline,
+                    size: 12,
+                    color: Colors.red.withOpacity(0.7),
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    'Failed to send',
+                    style: TextStyle(
+                      fontSize: 10,
+                      color: Colors.red.withOpacity(0.7),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
+    if (!_isInitialized) {
+      return Scaffold(
+        appBar: AppBar(
+          title: Row(
+            children: [
+              Icon(widget.philosopher.icon),
+              const SizedBox(width: 8),
+              Text('Chat with ${widget.philosopher.name}'),
+            ],
+          ),
+          backgroundColor: Theme.of(context).colorScheme.inversePrimary,
+        ),
+        body: const Center(
+          child: CircularProgressIndicator(),
+        ),
+      );
+    }
+
     return Scaffold(
       appBar: AppBar(
         title: Row(
@@ -624,38 +802,41 @@ class _ChatPageState extends State<ChatPage> {
       body: Column(
         children: [
           Expanded(
-            child: ListView.builder(
-              padding: const EdgeInsets.all(16),
-              itemCount: _messages.length,
-              itemBuilder: (context, index) {
-                final message = _messages[index];
-                return Align(
-                  alignment: message.isUser
-                      ? Alignment.centerRight
-                      : Alignment.centerLeft,
-                  child: Container(
-                    margin: const EdgeInsets.only(bottom: 8),
-                    padding: const EdgeInsets.all(12),
-                    constraints: BoxConstraints(
-                      maxWidth: MediaQuery.of(context).size.width * 0.7,
-                    ),
-                    decoration: BoxDecoration(
-                      color: message.isUser
-                          ? Theme.of(context).colorScheme.primary
-                          : Theme.of(context)
-                              .colorScheme
-                              .surfaceContainerHighest,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Text(
-                      message.text,
-                      style: TextStyle(
-                        color: message.isUser
-                            ? Theme.of(context).colorScheme.onPrimary
-                            : Theme.of(context).colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                  ),
+            child: StreamBuilder<List<ChatMessage>>(
+              stream: _chatService.getMessagesStream(_chatId!),
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+
+                if (snapshot.hasError) {
+                  return Center(
+                    child: Text('Error: ${snapshot.error}'),
+                  );
+                }
+
+                final messages = snapshot.data ?? [];
+
+                // Auto-scroll when new messages arrive
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  _scrollToBottom();
+                });
+
+                return Consumer<ChatService>(
+                  builder: (context, chatService, child) {
+                    return ListView.builder(
+                      controller: _scrollController,
+                      padding: const EdgeInsets.all(16),
+                      itemCount:
+                          messages.length + (chatService.isTyping ? 1 : 0),
+                      itemBuilder: (context, index) {
+                        if (index == messages.length && chatService.isTyping) {
+                          return _buildTypingIndicator();
+                        }
+                        return _buildMessageBubble(messages[index]);
+                      },
+                    );
+                  },
                 );
               },
             ),
@@ -681,12 +862,17 @@ class _ChatPageState extends State<ChatPage> {
                       border: OutlineInputBorder(),
                     ),
                     onSubmitted: (_) => _sendMessage(),
+                    maxLines: null,
                   ),
                 ),
                 const SizedBox(width: 8),
-                IconButton(
-                  onPressed: _sendMessage,
-                  icon: const Icon(Icons.send),
+                Consumer<ChatService>(
+                  builder: (context, chatService, child) {
+                    return IconButton(
+                      onPressed: chatService.isTyping ? null : _sendMessage,
+                      icon: const Icon(Icons.send),
+                    );
+                  },
                 ),
               ],
             ),
@@ -699,13 +885,7 @@ class _ChatPageState extends State<ChatPage> {
   @override
   void dispose() {
     _messageController.dispose();
+    _scrollController.dispose();
     super.dispose();
   }
-}
-
-class ChatMessage {
-  final String text;
-  final bool isUser;
-
-  ChatMessage({required this.text, required this.isUser});
 }
