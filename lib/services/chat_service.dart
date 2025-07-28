@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/foundation.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import '../models/chat_models.dart';
 import '../main.dart';
 
@@ -18,8 +19,11 @@ class ChatService extends ChangeNotifier {
 
   Future<String> createChatSession(Philosopher philosopher) async {
     final now = DateTime.now();
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+
     final chatSession = ChatSession(
       id: '',
+      userId: uid ?? '',
       philosopherId: philosopher.name,
       philosopherName: philosopher.name,
       createdAt: now,
@@ -30,10 +34,24 @@ class ChatService extends ChangeNotifier {
         await _firestore.collection('chats').add(chatSession.toFirestore());
     _currentChatId = docRef.id;
 
-    // Add welcome message
     await _addWelcomeMessage(philosopher);
-
     return docRef.id;
+  }
+
+  Future<String?> getExistingChatId(String philosopherName) async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    final query = await _firestore
+        .collection('chats')
+        .where('userId', isEqualTo: uid)
+        .where('philosopherId', isEqualTo: philosopherName)
+        .orderBy('lastMessageAt', descending: true)
+        .limit(1)
+        .get();
+
+    if (query.docs.isNotEmpty) {
+      return query.docs.first.id;
+    }
+    return null;
   }
 
   Future<void> _addWelcomeMessage(Philosopher philosopher) async {
@@ -61,13 +79,12 @@ class ChatService extends ChangeNotifier {
         .collection('chats')
         .doc(chatId)
         .collection('messages')
-        .orderBy('timestamp', descending: false)
+        .orderBy('timestamp')
         .snapshots()
         .map((snapshot) {
       _messages.clear();
       _messages.addAll(
-        snapshot.docs.map((doc) => ChatMessage.fromFirestore(doc)).toList(),
-      );
+          snapshot.docs.map((doc) => ChatMessage.fromFirestore(doc)).toList());
       return _messages;
     });
   }
@@ -75,7 +92,6 @@ class ChatService extends ChangeNotifier {
   Future<void> sendMessage(String text, Philosopher philosopher) async {
     if (_currentChatId == null || text.trim().isEmpty) return;
 
-    // Create user message
     final userMessage = ChatMessage(
       id: '',
       text: text.trim(),
@@ -84,34 +100,27 @@ class ChatService extends ChangeNotifier {
       status: MessageStatus.sending,
     );
 
-    // Add to Firestore
     final docRef = await _firestore
         .collection('chats')
         .doc(_currentChatId)
         .collection('messages')
         .add(userMessage.toFirestore());
 
-    // Update message status to sent
     await docRef
         .update({'status': MessageStatus.sent.toString().split('.').last});
 
-    // Show typing indicator
     _setTyping(true);
-
-    // Generate AI response
     await _generateAIResponse(philosopher);
   }
 
   Future<void> _generateAIResponse(Philosopher philosopher) async {
     try {
-      // Get conversation history for context
       final conversationHistory = _messages
           .where((msg) => msg.status == MessageStatus.sent)
           .map((msg) =>
               '${msg.isUser ? "Human" : philosopher.name}: ${msg.text}')
           .toList();
 
-      // Call Cloud Function for AI response
       final response = await _callPhilosopherCloudFunction(
         philosopher.name,
         _messages.last.text,
@@ -132,14 +141,12 @@ class ChatService extends ChangeNotifier {
           .collection('messages')
           .add(aiMessage.toFirestore());
 
-      // Update chat session last message time
       await _firestore.collection('chats').doc(_currentChatId).update({
         'lastMessageAt': Timestamp.fromDate(DateTime.now()),
       });
     } catch (e) {
       debugPrint('Error generating AI response: $e');
 
-      // Add error message
       final errorMessage = ChatMessage(
         id: '',
         text: _getErrorMessage(e),
@@ -166,7 +173,6 @@ class ChatService extends ChangeNotifier {
     try {
       final callable =
           _functions.httpsCallable('getPhilosopherResponseCallable');
-
       final result = await callable.call({
         'message': message,
         'philosopherId': philosopherId,
@@ -228,7 +234,6 @@ class ChatService extends ChangeNotifier {
     notifyListeners();
   }
 
-  // Method to test Cloud Function connectivity
   Future<bool> testCloudFunction() async {
     try {
       final callable = _functions.httpsCallable('testPhilosopherResponse');
@@ -239,5 +244,31 @@ class ChatService extends ChangeNotifier {
       debugPrint('Cloud Function test failed: $e');
       return false;
     }
+  }
+
+  Future<List<ChatSession>> fetchUserChatSessions() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return [];
+
+    final querySnapshot = await _firestore
+        .collection('chats')
+        .orderBy('lastMessageAt', descending: true)
+        .get();
+
+    return querySnapshot.docs
+        .map((doc) => ChatSession.fromFirestore(doc))
+        .toList();
+  }
+
+  Future<void> deleteChatSession(String chatId) async {
+    final messagesRef =
+        _firestore.collection('chats').doc(chatId).collection('messages');
+
+    final messages = await messagesRef.get();
+    for (final doc in messages.docs) {
+      await doc.reference.delete();
+    }
+
+    await _firestore.collection('chats').doc(chatId).delete();
   }
 }

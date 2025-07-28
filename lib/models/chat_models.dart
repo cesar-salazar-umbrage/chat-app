@@ -59,6 +59,7 @@ class ChatMessage {
 
 class ChatSession {
   final String id;
+  final String userId;
   final String philosopherId;
   final String philosopherName;
   final DateTime createdAt;
@@ -66,6 +67,7 @@ class ChatSession {
 
   ChatSession({
     required this.id,
+    required this.userId,
     required this.philosopherId,
     required this.philosopherName,
     required this.createdAt,
@@ -76,6 +78,7 @@ class ChatSession {
     final data = doc.data() as Map<String, dynamic>;
     return ChatSession(
       id: doc.id,
+      userId: data['userId'] ?? '',
       philosopherId: data['philosopherId'] ?? '',
       philosopherName: data['philosopherName'] ?? '',
       createdAt: (data['createdAt'] as Timestamp).toDate(),
@@ -85,6 +88,7 @@ class ChatSession {
 
   Map<String, dynamic> toFirestore() {
     return {
+      'userId': userId,
       'philosopherId': philosopherId,
       'philosopherName': philosopherName,
       'createdAt': Timestamp.fromDate(createdAt),

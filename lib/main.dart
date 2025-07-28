@@ -9,11 +9,13 @@ import 'dart:math';
 
 import 'services/chat_service.dart';
 import 'models/chat_models.dart';
+import 'screens/chat_history_page.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp();
   await FirebaseAuth.instance.signInAnonymously();
+  await QuoteService.loadQuotes();
   runApp(const MyApp());
 }
 
@@ -160,6 +162,8 @@ class _PhilosopherSelectionPageState extends State<PhilosopherSelectionPage>
   late Animation<double> _fadeAnimation;
   Quote? _currentQuote;
   bool _isLoading = true;
+  // late ChatService _chatService;
+  // List<ChatSession> _userChats = [];
 
   static const List<Philosopher> philosophers = [
     Philosopher(
@@ -209,6 +213,13 @@ class _PhilosopherSelectionPageState extends State<PhilosopherSelectionPage>
       icon: Icons.bolt,
     ),
   ];
+
+  Philosopher getPhilosopherByName(String name) {
+    return _PhilosopherSelectionPageState.philosophers.firstWhere(
+      (p) => p.name == name,
+      orElse: () => _PhilosopherSelectionPageState.philosophers.first,
+    );
+  }
 
   @override
   void initState() {
@@ -272,6 +283,18 @@ class _PhilosopherSelectionPageState extends State<PhilosopherSelectionPage>
         title: const Text('Choose Your Philosopher'),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
         actions: [
+          IconButton(
+            icon: const Icon(Icons.history),
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => const ChatHistoryPage(),
+                ),
+              );
+            },
+            tooltip: 'Chat History',
+          ),
           IconButton(
             icon: const Icon(Icons.favorite),
             onPressed: () {
@@ -582,8 +605,9 @@ class _FavoritesPageState extends State<FavoritesPage> {
 
 class ChatPage extends StatefulWidget {
   final Philosopher philosopher;
+  final String? existingChatId;
 
-  const ChatPage({super.key, required this.philosopher});
+  const ChatPage({super.key, required this.philosopher, this.existingChatId});
 
   @override
   State<ChatPage> createState() => _ChatPageState();
@@ -605,13 +629,16 @@ class _ChatPageState extends State<ChatPage> {
 
   Future<void> _initializeChat() async {
     try {
-      _chatId = await _chatService.createChatSession(widget.philosopher);
+      if (widget.existingChatId != null) {
+        _chatId = widget.existingChatId;
+      } else {
+        _chatId = await _chatService.createChatSession(widget.philosopher);
+      }
       setState(() {
         _isInitialized = true;
       });
     } catch (e) {
       debugPrint('Error initializing chat: $e');
-      // Handle error - maybe show a snackbar
     }
   }
 
